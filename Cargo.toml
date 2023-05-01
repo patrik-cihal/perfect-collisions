@@ -1,0 +1,12 @@
+[package]
+name = "perfect-collisions"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+ellipsoid = "0.2"
+rand = "0.8.5"
+strum = { version = "0.24.1", features = ["derive"] }
+tokio = { version = "1.27.0", features = ["macros", "tokio-macros", "rt-multi-thread"] }
