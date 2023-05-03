@@ -58,6 +58,7 @@ struct CollisionSimulator {
     last_cursor_position: Vec2,
     time_elapsed: f32,
     frame: usize,
+    debug_points: Vec<Vec2>
 }
 
 impl App<Txts> for CollisionSimulator {
@@ -72,6 +73,7 @@ impl App<Txts> for CollisionSimulator {
             camera: Camera::default(),
             time_elapsed: 0.,
             frame: 0,
+            debug_points: vec![]
         }
     }
 
@@ -87,6 +89,7 @@ impl App<Txts> for CollisionSimulator {
     fn draw(&mut self) {
         self.draw_ui();
         self.draw_objects();
+        self.draw_debug();
     }
 
     fn input(&mut self, event: &WindowEvent) -> bool {
@@ -187,7 +190,10 @@ impl CollisionSimulator {
         self.frame += 1;
         let mut collisions_pq = BinaryHeap::new();
         for i in 0..self.objects.len() {
-            for j in i + 1..self.objects.len() {
+            for j in 0..self.objects.len() {
+                if i == j {
+                    continue; 
+                }
                 if let Some(time) = self.check_collision(i, j, dt) {
                     collisions_pq.push((Reverse(F32Ord(time)), (i, j)));
                 }
@@ -239,6 +245,12 @@ impl CollisionSimulator {
             );
         }
     }
+    pub fn draw_debug(&mut self) {
+        for point in &self.debug_points {
+            let circle = Shape::from_circle(20).set_texture(Txts::Blue).apply(GTransform::from_translation(*point).inflate(0.05)).apply(self.camera.0);
+            self.graphics.add_geometry(circle.into());
+        }
+    }
     pub fn total_energy(&mut self) -> f32 {
         let mut total_energy = 0.;
         for object in &self.objects {
@@ -246,7 +258,7 @@ impl CollisionSimulator {
         }
         total_energy
     }
-    pub fn check_collision(&self, i: usize, j: usize, dt: f32) -> Option<f32> {
+    pub fn check_collision(&mut self, i: usize, j: usize, dt: f32) -> Option<f32> {
         let mut static_object = self.objects[i].clone();
         let mut moving_object = self.objects[j].clone();
 
@@ -280,7 +292,7 @@ impl CollisionSimulator {
 
         let mut answer = None;
 
-        let check = |p: Vec2, v: Vec2, a: Vec2, b: Vec2| -> Option<f32> {
+        let check = |p: Vec2, v: Vec2, a: Vec2, b: Vec2, debug_points: &mut Vec<Vec2>| -> Option<f32> {
             let slope_1 = (b.y - a.y) / (b.x - a.x);
             let y_1 = a.y - a.x * slope_1;
             let slope_2 = (v.y - p.y) / (v.x - p.x);
@@ -290,7 +302,8 @@ impl CollisionSimulator {
 
             if intercept >= a.x.min(b.x) && intercept <= a.x.max(b.x) {
                 let time = (intercept - p.x) / (v.x);
-                if time > 0. {
+                debug_points.push(vec2(intercept, intercept*slope_1+y_1));
+                if time > 0. && time < dt {
                     Some(time)
                 } else {
                     None
@@ -301,30 +314,17 @@ impl CollisionSimulator {
         };
 
         for p in &moving_object_points {
-            for i in 1..static_object_points.len() {
+            for i in 0..static_object_points.len() {
                 let a = static_object_points[i];
-                let b = static_object_points[i - 1];
+                let b = static_object_points[(i + 1) % static_object_points.len()];
 
-                if let Some(time) = check(*p, moving_object.velocity, a, b) {
+                if let Some(time) = check(*p, moving_object.velocity, a, b, &mut self.debug_points) {
                     answer = Some(answer.unwrap_or(f32::MAX).min(time));
                 }
             }
         }
 
-        let static_object_rel_vel = -moving_object.velocity;
-        for p in static_object_points {
-            for i in 1..moving_object_points.len() {
-                let a = moving_object_points[i];
-                let b = moving_object_points[i - 1];
-
-                if let Some(time) = check(p, static_object_rel_vel, a, b) {
-                    answer = Some(answer.unwrap_or(f32::MAX).min(time));
-                }
-            }
-        }
-
-        // must be Some at this point
-        Some(answer.unwrap())
+        answer
     }
 }
 
