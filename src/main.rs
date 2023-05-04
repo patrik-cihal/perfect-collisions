@@ -39,9 +39,11 @@ struct CollisionSimulator {
     middle_clicked: bool,
     cursor_position: Vec2,
     last_cursor_position: Vec2,
+    last_cursor_pressed_position: Vec2,
     time_elapsed: f32,
     frame: usize,
-    debug_points: Vec<Vec2>
+    debug_points: Vec<Vec2>,
+    spawning_object: Option<Object>
 }
 
 impl App<Txts> for CollisionSimulator {
@@ -53,21 +55,28 @@ impl App<Txts> for CollisionSimulator {
             middle_clicked: false,
             cursor_position: Vec2::ZERO,
             last_cursor_position: Vec2::ZERO,
+            last_cursor_pressed_position: Vec2::ZERO,
             camera: Camera::default(),
             time_elapsed: 0.,
             frame: 0,
-            debug_points: vec![]
+            debug_points: vec![],
+            spawning_object: None
         }
     }
 
     fn update(&mut self, dt: f32) {
-        self.time_elapsed += dt;
-
         self.update_camera();
+
+        self.last_cursor_position = self.cursor_position;
+
+        self.time_elapsed += dt;
+        // let fixed_dt = 0.5;
+        // if (self.time_elapsed / fixed_dt) as usize <= self.frame {
+        //     return;
+        // }
+        self.frame += 1;
         self.update_objects(dt);
 
-        //----------- late update ------------//
-        self.last_cursor_position = self.cursor_position;
     }
     fn draw(&mut self) {
         self.draw_ui();
@@ -98,15 +107,28 @@ impl App<Txts> for CollisionSimulator {
                 ..
             } => match state {
                 winit::event::ElementState::Pressed => {
-                    let object_velocity =
-                        (self.cursor_position - self.last_cursor_position) / self.camera.scale;
-                    let object = Object::new(
+                    self.spawning_object = Some(Object::new(
                         self.camera.screen_to_world(self.cursor_position),
-                        object_velocity,
+                        Vec2::ZERO,
                         rand::random::<f32>() % (PI * 2.),
-                        Shape::from_polygon(rand::random::<usize>() % 1 + 3),
-                    );
-                    self.objects.push(object);
+                        Shape::from_polygon(rand::random::<usize>() % 5 + 3),
+                    ));
+                    self.last_cursor_pressed_position = self.cursor_position;
+                }
+                winit::event::ElementState::Released => {
+                    let Some(spawning_object) = &mut self.spawning_object else {
+                        return false;
+                    };
+
+                    let object_velocity =
+                        -(self.cursor_position - self.last_cursor_pressed_position) / self.camera.scale;
+
+                    spawning_object.cur_time = self.time_elapsed;
+                    spawning_object.velocity = object_velocity;
+
+                    self.objects.push(spawning_object.clone());
+
+                    self.spawning_object = None;
                 }
                 _ => (),
             },
@@ -141,9 +163,9 @@ struct TraversedVolume {
 }
 
 impl TraversedVolume {
-    pub fn from_object(object: Object, dt: f32) -> Self {
+    pub fn from_object(object: Object, target_time: f32) -> Self {
         let mut future_object = object.clone();
-        future_object.update(dt);
+        future_object.update(target_time);
 
         let points = convex_hull(
             object
@@ -168,8 +190,10 @@ impl TraversedVolume {
 struct CollisionInfo {
     time: f32,
     object_1: usize,
+    object_1_col_stamp: usize,
     point_1: usize,
     object_2: usize,
+    object_2_col_stamp: usize,
     line_2: usize
 }
 
@@ -183,32 +207,58 @@ impl Ord for CollisionInfo {
 
 impl CollisionSimulator {
     pub fn update_objects(&mut self, dt: f32) {
-        let dt = 0.5;
-        if (self.time_elapsed / dt) as usize <= self.frame {
-            return;
-        }
-        self.frame += 1;
         let mut collisions_pq = BinaryHeap::new();
         for i in 0..self.objects.len() {
             for j in 0..self.objects.len() {
                 if i == j {
                     continue; 
                 }
-                if let Some(col_info) = self.check_collision(i, j, dt) {
+                if let Some(col_info) = self.check_collision(i, j) {
                     collisions_pq.push(Reverse(col_info));
                 }
             }
         }
 
         while let Some(Reverse(col_info)) = collisions_pq.pop() {
-            let object = &self.objects[col_info.object_1];
-            let col_position = object.shape.points[col_info.point_1].0.rotate_rad(object.rotation)+object.position+object.velocity*col_info.time;
+            let sharp_obj = &self.objects[col_info.object_1];
+            let other_obj = &self.objects[col_info.object_2];
+
+            if col_info.object_1_col_stamp != sharp_obj.updated || col_info.object_2_col_stamp != other_obj.updated {
+                continue;
+            }
+
+            let col_position = sharp_obj.shape.points[col_info.point_1].0.rotate_rad(sharp_obj.rotation)+sharp_obj.position+sharp_obj.velocity*(col_info.time-sharp_obj.cur_time);
             self.debug_points.push(col_position);
-            println!("{:?}", col_info);
+
+            let col_line_a = other_obj.shape.points[col_info.line_2].0.rotate_rad(other_obj.rotation);
+            let col_line_b = other_obj.shape.points[(col_info.line_2+1)%other_obj.shape.points.len()].0.rotate_rad(other_obj.rotation);
+
+            let normal = (col_line_a-col_line_b).perp().normalize();
+
+            let rel_velocity = sharp_obj.velocity-other_obj.velocity;
+
+            let impulse_numerator = -2. * rel_velocity.dot(normal);
+            let impulse_denominator = (1./sharp_obj.mass) + (1./other_obj.mass);
+            let impulse = impulse_numerator / impulse_denominator;
+
+            self.objects[col_info.object_1].update(col_info.time);
+            self.objects[col_info.object_2].update(col_info.time);
+
+            let mass1 = self.objects[col_info.object_1].mass;
+            let mass2 = self.objects[col_info.object_2].mass;
+            self.objects[col_info.object_1].velocity += impulse * normal / mass1;
+            self.objects[col_info.object_2].velocity -= impulse * normal / mass2;
+
+            self.objects[col_info.object_1].update(col_info.time+0.001);
+            self.objects[col_info.object_2].update(col_info.time+0.001);
+
+            for col in self.check_collisions(col_info.object_1).into_iter().chain(self.check_collisions(col_info.object_2)) {
+                collisions_pq.push(Reverse(col));
+            }
         }
 
         for object in &mut self.objects {
-            object.update(dt);
+            object.update(self.time_elapsed+0.001);
         }
     }
     pub fn update_camera(&mut self) {
@@ -225,7 +275,7 @@ impl CollisionSimulator {
     }
     pub fn draw_objects(&mut self) {
         for object in &self.objects {
-            let traversed_volume = TraversedVolume::from_object(object.clone(), 0.5);
+            let traversed_volume = TraversedVolume::from_object(object.clone(), self.time_elapsed+0.001);
             self.graphics.add_geometry(
                 Shape::new(
                     traversed_volume
@@ -247,6 +297,18 @@ impl CollisionSimulator {
                     .into(),
             );
         }
+        if let Some(spawning_object) = &self.spawning_object {
+            let object_gtransform =
+                GTransform::from_translation(spawning_object.position).rotate(spawning_object.rotation);
+            self.graphics.add_geometry(
+                spawning_object
+                    .shape
+                    .clone()
+                    .apply(object_gtransform)
+                    .apply(self.camera.0)
+                    .into(),
+            );
+        }
     }
     pub fn draw_debug(&mut self) {
         for point in &self.debug_points {
@@ -261,26 +323,50 @@ impl CollisionSimulator {
         }
         total_energy
     }
+
+    fn check_collisions(&self, obj_id: usize) -> Vec<CollisionInfo> {
+        let mut result = vec![];
+
+        for i in 0..self.objects.len() {
+            if obj_id == i {
+                continue;
+            }
+            if let Some(collision) = self.check_collision(obj_id, i) {
+                result.push(collision);
+            }
+            if let Some(collision) = self.check_collision(i, obj_id) {
+                result.push(collision);
+            }
+        }
+
+        result
+    }
+
     /// Checks whether obj 1 collides with obj 2 with one of its corners
-    pub fn check_collision(&mut self, obj_1_id: usize, obj_2_id: usize, dt: f32) -> Option<CollisionInfo> {
-        let mut obj_1 = self.objects[obj_1_id].clone();
-        let mut obj_2 = self.objects[obj_2_id].clone();
+    fn check_collision(&self, sharp_obj_id: usize, other_obj_id: usize) -> Option<CollisionInfo> {
+        let mut sharp_obj = self.objects[sharp_obj_id].clone();
+        let mut other_obj = self.objects[other_obj_id].clone();
 
-        obj_1.velocity -= obj_2.velocity;
-        obj_2.velocity = Vec2::ZERO;
+        let cur_time = sharp_obj.cur_time.max(other_obj.cur_time);
 
-        let obj_1_points = obj_1
+        sharp_obj.position += sharp_obj.velocity * (cur_time-sharp_obj.cur_time);
+        other_obj.position += other_obj.velocity * (cur_time-other_obj.cur_time);
+
+        sharp_obj.velocity -= other_obj.velocity;
+        other_obj.velocity = Vec2::ZERO;
+
+        let sharp_obj_points = sharp_obj
             .shape
             .points
             .iter()
-            .map(|(p, _)| p.rotate_rad(obj_1.rotation) + obj_1.position)
+            .map(|(p, _)| p.rotate_rad(sharp_obj.rotation) + sharp_obj.position)
             .collect::<Vec<_>>();
 
-        let obj_2_points = obj_2
+        let other_obj_points = other_obj
             .shape
             .points
             .iter()
-            .map(|(p, _)| p.rotate_rad(obj_2.rotation) + obj_2.position)
+            .map(|(p, _)| p.rotate_rad(other_obj.rotation) + other_obj.position)
             .collect::<Vec<_>>();
 
 
@@ -295,8 +381,8 @@ impl CollisionSimulator {
             let intercept = (y_2 - y_1) / (slope_1 - slope_2);
 
             if intercept >= a.x.min(b.x) && intercept <= a.x.max(b.x) {
-                let time = (intercept - p.x) / (v.x);
-                if time > 0. && time < dt {
+                let time = (intercept - p.x) / (v.x) + cur_time;
+                if time > cur_time && time < self.time_elapsed {
                     Some(time)
                 } else {
                     None
@@ -306,17 +392,19 @@ impl CollisionSimulator {
             }
         };
 
-        for (i, p) in obj_1_points.into_iter().enumerate() {
-            for j in 0..obj_2_points.len() {
-                let a = obj_2_points[j];
-                let b = obj_2_points[(j + 1) % obj_2_points.len()];
+        for (i, p) in sharp_obj_points.into_iter().enumerate() {
+            for j in 0..other_obj_points.len() {
+                let a = other_obj_points[j];
+                let b = other_obj_points[(j + 1) % other_obj_points.len()];
 
-                if let Some(time) = check(p, obj_1.velocity, a, b) {
+                if let Some(time) = check(p, sharp_obj.velocity, a, b) {
                     let candidate = CollisionInfo {
                         time,
-                        object_1: obj_1_id,
+                        object_1: sharp_obj_id,
+                        object_1_col_stamp: self.objects[sharp_obj_id].updated,
                         point_1: i,
-                        object_2: obj_2_id,
+                        object_2: other_obj_id,
+                        object_2_col_stamp: self.objects[other_obj_id].updated,
                         line_2: j
                     };
                     if let Some(cur_answer) = &mut collision {

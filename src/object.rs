@@ -9,6 +9,8 @@ pub struct Object {
     pub rotation: f32,
     pub rot_velocity: f32,
     pub shape: Shape<Txts>,
+    pub cur_time: f32,
+    pub updated: usize
 }
 
 impl Object {
@@ -21,11 +23,18 @@ impl Object {
             rotation,
             rot_velocity: 0.,
             shape,
+            cur_time: 0.,
+            updated: 0
         }
     }
-    pub fn update(&mut self, dt: f32) {
+    pub fn update(&mut self, target_time: f32) {
+        assert!(target_time>=self.cur_time);
+
+        let dt = target_time-self.cur_time;
+
         self.position += self.velocity * dt;
         self.velocity += self.acceleration * dt;
-        self.acceleration = Vec2::ZERO;
+        self.cur_time += dt;
+        self.updated += 1;
     }
 }
