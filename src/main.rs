@@ -283,12 +283,6 @@ impl CollisionSimulator {
             .map(|(p, _)| p.rotate_rad(moving_object.rotation) + moving_object.position)
             .collect::<Vec<_>>();
 
-        if !geometry::sat_collision_detect(
-            &static_object_points,
-            &traversed_vol.points,
-        ) {
-            return None;
-        }
 
         let mut answer = None;
 
@@ -302,8 +296,8 @@ impl CollisionSimulator {
 
             if intercept >= a.x.min(b.x) && intercept <= a.x.max(b.x) {
                 let time = (intercept - p.x) / (v.x);
-                debug_points.push(vec2(intercept, intercept*slope_1+y_1));
                 if time > 0. && time < dt {
+                    debug_points.push(vec2(intercept, intercept*slope_1+y_1));
                     Some(time)
                 } else {
                     None
