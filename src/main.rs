@@ -12,23 +12,6 @@ use object::Object;
 mod geometry;
 use geometry::*;
 
-#[derive(PartialEq, PartialOrd)]
-struct F32Ord(f32);
-
-impl Deref for F32Ord {
-    type Target = f32;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl Eq for F32Ord {}
-
-impl Ord for F32Ord {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.partial_cmp(other).unwrap()
-    }
-}
 
 #[repr(u32)]
 #[derive(Clone, Copy, Default, strum::Display, strum::EnumIter, Debug)]
@@ -121,7 +104,7 @@ impl App<Txts> for CollisionSimulator {
                         self.camera.screen_to_world(self.cursor_position),
                         object_velocity,
                         rand::random::<f32>() % (PI * 2.),
-                        Shape::from_polygon(rand::random::<usize>() % 5 + 3),
+                        Shape::from_polygon(rand::random::<usize>() % 1 + 3),
                     );
                     self.objects.push(object);
                 }
@@ -181,6 +164,23 @@ impl TraversedVolume {
     }
 }
 
+#[derive(PartialEq, PartialOrd, Debug, Clone, Copy)]
+struct CollisionInfo {
+    time: f32,
+    object_1: usize,
+    point_1: usize,
+    object_2: usize,
+    line_2: usize
+}
+
+impl Eq for CollisionInfo {}
+
+impl Ord for CollisionInfo {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.partial_cmp(other).unwrap()
+    }
+}
+
 impl CollisionSimulator {
     pub fn update_objects(&mut self, dt: f32) {
         let dt = 0.5;
@@ -194,14 +194,17 @@ impl CollisionSimulator {
                 if i == j {
                     continue; 
                 }
-                if let Some(time) = self.check_collision(i, j, dt) {
-                    collisions_pq.push((Reverse(F32Ord(time)), (i, j)));
+                if let Some(col_info) = self.check_collision(i, j, dt) {
+                    collisions_pq.push(Reverse(col_info));
                 }
             }
         }
 
-        while let Some((Reverse(t), (i, j))) = collisions_pq.pop() {
-            println!("{} {} {}", *t, i, j);
+        while let Some(Reverse(col_info)) = collisions_pq.pop() {
+            let object = &self.objects[col_info.object_1];
+            let col_position = object.shape.points[col_info.point_1].0.rotate_rad(object.rotation)+object.position+object.velocity*col_info.time;
+            self.debug_points.push(col_position);
+            println!("{:?}", col_info);
         }
 
         for object in &mut self.objects {
@@ -258,46 +261,42 @@ impl CollisionSimulator {
         }
         total_energy
     }
-    pub fn check_collision(&mut self, i: usize, j: usize, dt: f32) -> Option<f32> {
-        let mut static_object = self.objects[i].clone();
-        let mut moving_object = self.objects[j].clone();
+    /// Checks whether obj 1 collides with obj 2 with one of its corners
+    pub fn check_collision(&mut self, obj_1_id: usize, obj_2_id: usize, dt: f32) -> Option<CollisionInfo> {
+        let mut obj_1 = self.objects[obj_1_id].clone();
+        let mut obj_2 = self.objects[obj_2_id].clone();
 
-        moving_object.velocity -= static_object.velocity;
-        moving_object.acceleration -= static_object.acceleration;
-        static_object.velocity = Vec2::ZERO;
-        static_object.acceleration = Vec2::ZERO;
+        obj_1.velocity -= obj_2.velocity;
+        obj_2.velocity = Vec2::ZERO;
 
-        let traversed_vol = TraversedVolume::from_object(moving_object.clone(), dt);
-
-        let static_object_points = static_object
+        let obj_1_points = obj_1
             .shape
             .points
             .iter()
-            .map(|(p, _)| p.rotate_rad(static_object.rotation) + static_object.position)
+            .map(|(p, _)| p.rotate_rad(obj_1.rotation) + obj_1.position)
             .collect::<Vec<_>>();
 
-        let moving_object_points = moving_object
+        let obj_2_points = obj_2
             .shape
             .points
             .iter()
-            .map(|(p, _)| p.rotate_rad(moving_object.rotation) + moving_object.position)
+            .map(|(p, _)| p.rotate_rad(obj_2.rotation) + obj_2.position)
             .collect::<Vec<_>>();
 
 
-        let mut answer = None;
+        let mut collision: Option<CollisionInfo> = None;
 
-        let check = |p: Vec2, v: Vec2, a: Vec2, b: Vec2, debug_points: &mut Vec<Vec2>| -> Option<f32> {
+        let check = |p: Vec2, v: Vec2, a: Vec2, b: Vec2| -> Option<f32> {
             let slope_1 = (b.y - a.y) / (b.x - a.x);
             let y_1 = a.y - a.x * slope_1;
-            let slope_2 = (v.y - p.y) / (v.x - p.x);
-            let y_2 = v.y - v.x * slope_2;
+            let slope_2 = (v.y) / (v.x);
+            let y_2 = p.y-p.x * slope_2;
 
             let intercept = (y_2 - y_1) / (slope_1 - slope_2);
 
             if intercept >= a.x.min(b.x) && intercept <= a.x.max(b.x) {
                 let time = (intercept - p.x) / (v.x);
                 if time > 0. && time < dt {
-                    debug_points.push(vec2(intercept, intercept*slope_1+y_1));
                     Some(time)
                 } else {
                     None
@@ -307,18 +306,30 @@ impl CollisionSimulator {
             }
         };
 
-        for p in &moving_object_points {
-            for i in 0..static_object_points.len() {
-                let a = static_object_points[i];
-                let b = static_object_points[(i + 1) % static_object_points.len()];
+        for (i, p) in obj_1_points.into_iter().enumerate() {
+            for j in 0..obj_2_points.len() {
+                let a = obj_2_points[j];
+                let b = obj_2_points[(j + 1) % obj_2_points.len()];
 
-                if let Some(time) = check(*p, moving_object.velocity, a, b, &mut self.debug_points) {
-                    answer = Some(answer.unwrap_or(f32::MAX).min(time));
+                if let Some(time) = check(p, obj_1.velocity, a, b) {
+                    let candidate = CollisionInfo {
+                        time,
+                        object_1: obj_1_id,
+                        point_1: i,
+                        object_2: obj_2_id,
+                        line_2: j
+                    };
+                    if let Some(cur_answer) = &mut collision {
+                        *cur_answer = (*cur_answer).min(candidate);
+                    }
+                    else {
+                        collision = Some(candidate);
+                    }
                 }
             }
         }
 
-        answer
+        collision
     }
 }
 
