@@ -3,10 +3,10 @@
 mod camera;
 mod object;
 
-use std::{cmp::Reverse, collections::BinaryHeap, f32::consts::PI, time::Instant};
+use std::{cmp::Reverse, collections::{BinaryHeap, BTreeSet}, f32::consts::PI, time::Instant, ops::Deref};
 
 use camera::Camera;
-use ellipsoid::prelude::{winit::event::MouseButton, winit::window::Window, *};
+use ellipsoid::prelude::{winit::event::MouseButton, winit::window::Window, *, egui::epaint::ahash::HashSet};
 use object::Object;
 
 mod geometry;
@@ -32,6 +32,24 @@ impl Into<u32> for AppTextures {
 
 type Txts = AppTextures;
 
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
+struct F32Ord(f32);
+
+impl Deref for F32Ord {
+    type Target = f32;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Eq for F32Ord {}
+
+impl Ord for F32Ord {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.partial_cmp(other).unwrap()
+    }
+}
+    
 struct CollisionSimulator {
     objects: Vec<Object>,
     camera: Camera,
@@ -39,12 +57,11 @@ struct CollisionSimulator {
     middle_clicked: bool,
     cursor_position: Vec2,
     last_cursor_position: Vec2,
-    last_cursor_pressed_position: Vec2,
+    right_clicked: bool,
     time_elapsed: f32,
     frame_rate: usize,
     frame: usize,
     debug_points: Vec<Vec2>,
-    spawning_object: Option<Object>
 }
 
 impl App<Txts> for CollisionSimulator {
@@ -56,13 +73,12 @@ impl App<Txts> for CollisionSimulator {
             middle_clicked: false,
             cursor_position: Vec2::ZERO,
             last_cursor_position: Vec2::ZERO,
-            last_cursor_pressed_position: Vec2::ZERO,
             camera: Camera::default(),
             time_elapsed: 0.,
             frame: 0,
             debug_points: vec![],
-            spawning_object: None,
-            frame_rate: 0
+            frame_rate: 0,
+            right_clicked: false
         }
     }
 
@@ -74,6 +90,7 @@ impl App<Txts> for CollisionSimulator {
         self.frame_rate = (1./dt) as usize;
         self.time_elapsed += dt;
         self.frame += 1;
+        self.update_collisions(dt);
         self.update_objects(dt);
     }
     fn draw(&mut self) {
@@ -105,28 +122,10 @@ impl App<Txts> for CollisionSimulator {
                 ..
             } => match state {
                 winit::event::ElementState::Pressed => {
-                    self.spawning_object = Some(Object::new(
-                        self.camera.screen_to_world(self.cursor_position),
-                        Vec2::ZERO,
-                        rand::random::<f32>() % (PI * 2.),
-                        Shape::from_polygon(rand::random::<usize>() % 5 + 3),
-                    ));
-                    self.last_cursor_pressed_position = self.cursor_position;
+                    self.right_clicked = true;
                 }
                 winit::event::ElementState::Released => {
-                    let Some(spawning_object) = &mut self.spawning_object else {
-                        return false;
-                    };
-
-                    let object_velocity =
-                        -(self.cursor_position - self.last_cursor_pressed_position) / self.camera.scale;
-
-                    spawning_object.cur_time = self.time_elapsed;
-                    spawning_object.velocity = object_velocity;
-
-                    self.objects.push(spawning_object.clone());
-
-                    self.spawning_object = None;
+                    self.right_clicked = false;
                 }
             },
             WindowEvent::CursorMoved { position, .. } => {
@@ -204,63 +203,152 @@ impl Ord for CollisionInfo {
 
 impl CollisionSimulator {
     pub fn update_objects(&mut self, dt: f32) {
+        let mut active_objects = vec![];
+
+        for object in std::mem::take(&mut self.objects) {
+            if object.collided > 100 {
+                continue;
+            }
+            active_objects.push(object);
+        }
+        self.objects = active_objects;
+    
+        for object in &mut self.objects {
+            object.update(self.time_elapsed+0.001);
+        }
+
+        if self.right_clicked {
+            let spawning_object = Object::new(
+                self.camera.screen_to_world(self.cursor_position),
+                vec2(rand::random::<f32>()-0.5, rand::random::<f32>()-0.5) * 5.,
+                rand::random::<f32>() % (PI * 2.),
+                Shape::from_polygon(rand::random::<usize>() % 5 + 3),
+            );
+
+            self.objects.push(spawning_object);
+        }
+    }
+    fn update_collisions(&mut self, dt: f32) {
+        let time_measure = Instant::now();
         let mut collisions_pq = BinaryHeap::new();
-        for i in 0..self.objects.len() {
-            for j in 0..self.objects.len() {
-                if i == j {
-                    continue; 
+
+        let mut bounds = vec![];
+        let mut bounds_rev = vec![];
+
+        macro_rules! compute_x_bounds {
+            ($i: expr) => {
+                {
+                    let traversed_volume = TraversedVolume::from_object(self.objects[$i].clone(), self.time_elapsed);
+                    let x_s = traversed_volume.points.iter().map(|p| F32Ord(p.x)).collect::<Vec<_>>();
+                    let min_x = *x_s.iter().min().unwrap();
+                    let max_x = *x_s.iter().max().unwrap();
+                    (min_x, max_x)
                 }
-                if let Some(col_info) = self.check_collision(i, j) {
+            }
+        }
+
+        for i in 0..self.objects.len() {
+            let bound = compute_x_bounds!(i);
+
+            bounds.push((bound.0, bound.1, i));
+            bounds_rev.push((bound.1, bound.0, i));
+        }
+
+        let mut bounds_left_bt = BTreeSet::from_iter(bounds.clone());
+        let mut bounds_right_bt = BTreeSet::from_iter(bounds_rev);
+
+        for i in 0..self.objects.len() {
+            let mut candidates = vec![];
+
+            // might contain duplicates (segments that are entirely inside) but we don't care, doesn't change anything
+            for bound in bounds_left_bt.range(bounds[i]..(bounds[i].1, F32Ord(0.), 0)) {
+                candidates.push(bound.2);
+            }
+            for bound in bounds_right_bt.range(bounds[i]..(bounds[i].1, F32Ord(0.), 0)) {
+                candidates.push(bound.2);
+            }
+
+            for candidate in candidates {
+                if let Some(col_info) = self.check_collision(i, candidate) {
                     collisions_pq.push(Reverse(col_info));
                 }
             }
         }
 
-        let time_measure = Instant::now();
         while let Some(Reverse(col_info)) = collisions_pq.pop() {
-            let sharp_obj = &self.objects[col_info.object_1];
-            let other_obj = &self.objects[col_info.object_2];
+            if self.handle_collision(col_info) {
+                for i in [col_info.object_1, col_info.object_2] {
+                    let new_bound = compute_x_bounds!(i);
+                    let new_bound = (new_bound.0, new_bound.1, i);
 
-            if col_info.object_1_col_stamp != sharp_obj.updated || col_info.object_2_col_stamp != other_obj.updated {
-                continue;
-            }
+                    let old_bound = bounds[i];
+                    bounds[i] = new_bound;
 
-            let col_position = sharp_obj.shape.points[col_info.point_1].0.rotate_rad(sharp_obj.rotation)+sharp_obj.position+sharp_obj.velocity*(col_info.time-sharp_obj.cur_time);
-            self.debug_points.push(col_position);
+                    bounds_left_bt.remove(&old_bound);
+                    bounds_right_bt.remove(&(old_bound.1, old_bound.0, old_bound.2));
 
-            let col_line_a = other_obj.shape.points[col_info.line_2].0.rotate_rad(other_obj.rotation);
-            let col_line_b = other_obj.shape.points[(col_info.line_2+1)%other_obj.shape.points.len()].0.rotate_rad(other_obj.rotation);
+                    bounds_left_bt.insert(new_bound);
+                    bounds_right_bt.insert((new_bound.1, new_bound.0, new_bound.2));
 
-            let normal = (col_line_a-col_line_b).perp().normalize();
+                    let mut candidates = vec![];
 
-            let rel_velocity = sharp_obj.velocity-other_obj.velocity;
+                    for bound in bounds_left_bt.range(new_bound..(new_bound.1, F32Ord(0.), 0)) {
+                        candidates.push(bound.2);
+                    }
+                    for bound in bounds_right_bt.range(new_bound..(new_bound.1, F32Ord(0.), 0)) {
+                        candidates.push(bound.2);
+                    }
 
-            let impulse_numerator = -2. * rel_velocity.dot(normal);
-            let impulse_denominator = (1./sharp_obj.mass) + (1./other_obj.mass);
-            let impulse = impulse_numerator / impulse_denominator;
-
-            self.objects[col_info.object_1].update(col_info.time);
-            self.objects[col_info.object_2].update(col_info.time);
-
-            let mass1 = self.objects[col_info.object_1].mass;
-            let mass2 = self.objects[col_info.object_2].mass;
-            self.objects[col_info.object_1].velocity += impulse * normal / mass1;
-            self.objects[col_info.object_2].velocity -= impulse * normal / mass2;
-
-            self.objects[col_info.object_1].position += normal * 0.005;
-            self.objects[col_info.object_2].position -= normal * 0.005;
-
-            for col in self.check_collisions(col_info.object_1).into_iter().chain(self.check_collisions(col_info.object_2)) {
-                collisions_pq.push(Reverse(col));
+                    for candidate in candidates {
+                        if let Some(col_info) = self.check_collision(i, candidate) {
+                            collisions_pq.push(Reverse(col_info));
+                        }
+                    }
+                }
             }
         }
+        println!("Doing collisions took: {:?}", time_measure.elapsed());
 
-
-
-        for object in &mut self.objects {
-            object.update(self.time_elapsed+0.001);
-        }
     }
+    fn handle_collision(&mut self, col_info: CollisionInfo) -> bool {
+        let sharp_obj = &self.objects[col_info.object_1];
+        let other_obj = &self.objects[col_info.object_2];
+
+        if col_info.object_1_col_stamp != sharp_obj.updated || col_info.object_2_col_stamp != other_obj.updated {
+            return false;
+        }
+
+        let col_position = sharp_obj.shape.points[col_info.point_1].0.rotate_rad(sharp_obj.rotation)+sharp_obj.position+sharp_obj.velocity*(col_info.time-sharp_obj.cur_time);
+        self.debug_points.push(col_position);
+
+        let col_line_a = other_obj.shape.points[col_info.line_2].0.rotate_rad(other_obj.rotation);
+        let col_line_b = other_obj.shape.points[(col_info.line_2+1)%other_obj.shape.points.len()].0.rotate_rad(other_obj.rotation);
+
+        let normal = (col_line_a-col_line_b).perp().normalize();
+
+        let rel_velocity = sharp_obj.velocity-other_obj.velocity;
+
+        let impulse_numerator = -2. * rel_velocity.dot(normal);
+        let impulse_denominator = (1./sharp_obj.mass) + (1./other_obj.mass);
+        let impulse = impulse_numerator / impulse_denominator;
+
+        self.objects[col_info.object_1].update(col_info.time);
+        self.objects[col_info.object_2].update(col_info.time);
+
+        let mass1 = self.objects[col_info.object_1].mass;
+        let mass2 = self.objects[col_info.object_2].mass;
+        self.objects[col_info.object_1].velocity += impulse * normal / mass1;
+        self.objects[col_info.object_2].velocity -= impulse * normal / mass2;
+
+        self.objects[col_info.object_1].collided += 1;
+        self.objects[col_info.object_2].collided += 1;
+
+        self.objects[col_info.object_1].position += normal * 0.005;
+        self.objects[col_info.object_2].position -= normal * 0.005;
+
+        true
+    }
+
     pub fn update_camera(&mut self) {
         if self.middle_clicked {
             let delta = (self.cursor_position - self.last_cursor_position) / self.camera.scale;
@@ -292,18 +380,6 @@ impl CollisionSimulator {
                 GTransform::from_translation(object.position).rotate(object.rotation);
             self.graphics.add_geometry(
                 object
-                    .shape
-                    .clone()
-                    .apply(object_gtransform)
-                    .apply(self.camera.0)
-                    .into(),
-            );
-        }
-        if let Some(spawning_object) = &self.spawning_object {
-            let object_gtransform =
-                GTransform::from_translation(spawning_object.position).rotate(spawning_object.rotation);
-            self.graphics.add_geometry(
-                spawning_object
                     .shape
                     .clone()
                     .apply(object_gtransform)
