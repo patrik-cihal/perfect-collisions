@@ -3,7 +3,7 @@
 mod camera;
 mod object;
 
-use std::{cmp::Reverse, collections::BinaryHeap, f32::consts::PI, ops::Deref};
+use std::{cmp::Reverse, collections::BinaryHeap, f32::consts::PI, time::Instant};
 
 use camera::Camera;
 use ellipsoid::prelude::{winit::event::MouseButton, winit::window::Window, *};
@@ -41,6 +41,7 @@ struct CollisionSimulator {
     last_cursor_position: Vec2,
     last_cursor_pressed_position: Vec2,
     time_elapsed: f32,
+    frame_rate: usize,
     frame: usize,
     debug_points: Vec<Vec2>,
     spawning_object: Option<Object>
@@ -60,7 +61,8 @@ impl App<Txts> for CollisionSimulator {
             time_elapsed: 0.,
             frame: 0,
             debug_points: vec![],
-            spawning_object: None
+            spawning_object: None,
+            frame_rate: 0
         }
     }
 
@@ -69,14 +71,10 @@ impl App<Txts> for CollisionSimulator {
 
         self.last_cursor_position = self.cursor_position;
 
+        self.frame_rate = (1./dt) as usize;
         self.time_elapsed += dt;
-        // let fixed_dt = 0.5;
-        // if (self.time_elapsed / fixed_dt) as usize <= self.frame {
-        //     return;
-        // }
         self.frame += 1;
         self.update_objects(dt);
-
     }
     fn draw(&mut self) {
         self.draw_ui();
@@ -130,7 +128,6 @@ impl App<Txts> for CollisionSimulator {
 
                     self.spawning_object = None;
                 }
-                _ => (),
             },
             WindowEvent::CursorMoved { position, .. } => {
                 let x = position.x as f32 / self.graphics.window().inner_size().width as f32;
@@ -219,6 +216,7 @@ impl CollisionSimulator {
             }
         }
 
+        let time_measure = Instant::now();
         while let Some(Reverse(col_info)) = collisions_pq.pop() {
             let sharp_obj = &self.objects[col_info.object_1];
             let other_obj = &self.objects[col_info.object_2];
@@ -249,13 +247,15 @@ impl CollisionSimulator {
             self.objects[col_info.object_1].velocity += impulse * normal / mass1;
             self.objects[col_info.object_2].velocity -= impulse * normal / mass2;
 
-            self.objects[col_info.object_1].update(col_info.time+0.001);
-            self.objects[col_info.object_2].update(col_info.time+0.001);
+            self.objects[col_info.object_1].position += normal * 0.005;
+            self.objects[col_info.object_2].position -= normal * 0.005;
 
             for col in self.check_collisions(col_info.object_1).into_iter().chain(self.check_collisions(col_info.object_2)) {
                 collisions_pq.push(Reverse(col));
             }
         }
+
+
 
         for object in &mut self.objects {
             object.update(self.time_elapsed+0.001);
@@ -271,6 +271,8 @@ impl CollisionSimulator {
         egui::Window::new("Simulation Info").show(&self.graphics.egui_platform.context(), |ui| {
             ui.label(format!("Time: {}", self.time_elapsed));
             ui.label(format!("Energy: {}", self.total_energy()));
+            ui.label(format!("Frame rate: {}", self.frame_rate));
+            ui.label(format!("Objects count: {}", self.objects.len()));
         });
     }
     pub fn draw_objects(&mut self) {
