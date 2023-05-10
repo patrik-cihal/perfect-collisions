@@ -10,7 +10,8 @@ pub struct Object {
     pub rot_velocity: f32,
     pub shape: Shape<Txts>,
     pub cur_time: f32,
-    pub updated: usize
+    pub updated: usize,
+    pub collided: usize
 }
 
 impl Object {
@@ -24,7 +25,8 @@ impl Object {
             rot_velocity: 0.,
             shape,
             cur_time: 0.,
-            updated: 0
+            updated: 0,
+            collided: 0
         }
     }
     pub fn update(&mut self, target_time: f32) {
