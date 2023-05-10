@@ -2,7 +2,7 @@
 
 Project focusing on finding the optimal method for detecting & handling collisions in space.
 
-Cur approach: max 200 polygons of 3-8 sides before frame drop.
+Cur approach: max 2000 polygons of 3-8 sides before in near vicinity, otherwise 15k
 
 Optimization 1: 
 - compare only those whose trajectory-bounding boxes intersect on the x-coordinate - when objects close to each other: max. 2000, otherwise the limit is probably like 15k
