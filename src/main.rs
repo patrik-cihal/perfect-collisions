@@ -229,7 +229,9 @@ impl CollisionSimulator {
         }
     }
     fn update_collisions(&mut self, dt: f32) {
-        let time_measure = Instant::now();
+        println!("Number of objects: {}", self.objects.len());
+
+        let mut time_measure = Instant::now();
         let mut collisions_pq = BinaryHeap::new();
 
         let mut bounds = vec![];
@@ -254,8 +256,13 @@ impl CollisionSimulator {
             bounds_rev.push((bound.1, bound.0, i));
         }
 
+        println!("Computing bounds took: {:?}", time_measure.elapsed());
+        time_measure = Instant::now();
+
         let mut bounds_left_bt = BTreeSet::from_iter(bounds.clone());
         let mut bounds_right_bt = BTreeSet::from_iter(bounds_rev);
+
+        println!("Tree construction: {:?}", time_measure.elapsed());
 
         for i in 0..self.objects.len() {
             let mut candidates = vec![];
@@ -267,13 +274,15 @@ impl CollisionSimulator {
             for bound in bounds_right_bt.range(bounds[i]..(bounds[i].1, F32Ord(0.), 0)) {
                 candidates.push(bound.2);
             }
-
             for candidate in candidates {
                 if let Some(col_info) = self.check_collision(i, candidate) {
                     collisions_pq.push(Reverse(col_info));
                 }
             }
         }
+
+        println!("Detecting init collisions took {:?}", time_measure.elapsed());
+        time_measure = Instant::now();
 
         while let Some(Reverse(col_info)) = collisions_pq.pop() {
             if self.handle_collision(col_info) {
@@ -307,7 +316,7 @@ impl CollisionSimulator {
                 }
             }
         }
-        println!("Doing collisions took: {:?}", time_measure.elapsed());
+        println!("Handling collisions + extra took: {:?}", time_measure.elapsed());
 
     }
     fn handle_collision(&mut self, col_info: CollisionInfo) -> bool {
