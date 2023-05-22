@@ -278,6 +278,9 @@ impl CollisionSimulator {
                 if let Some(col_info) = self.check_collision(i, candidate) {
                     collisions_pq.push(Reverse(col_info));
                 }
+                if let Some(col_info) = self.check_collision(candidate, i) {
+                    collisions_pq.push(Reverse(col_info));
+                }
             }
         }
 
@@ -310,6 +313,9 @@ impl CollisionSimulator {
 
                     for candidate in candidates {
                         if let Some(col_info) = self.check_collision(i, candidate) {
+                            collisions_pq.push(Reverse(col_info));
+                        }
+                        if let Some(col_info) = self.check_collision(candidate, i) {
                             collisions_pq.push(Reverse(col_info));
                         }
                     }
