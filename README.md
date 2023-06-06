@@ -2,7 +2,7 @@
 
 Project focusing on finding the optimal method for detecting & handling collisions in space.
 
-Cur approach: max 2000 polygons of 3-8 sides in near vicinity before frame drop, otherwise 15k
+Cur approach: max 2000 polygons of 3-8 sides in near vicinity at 60fps before frame drop, otherwise 15k
 The most time when objects are close is taken by detailed collision checking of the candidates, therefore further upper bound lowering could benefit.
 
 Optimization 1: 
